@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- Synth wave icon -->
+    <path
+        android:pathData="M24,54 Q36,24 48,54 T72,54 T96,54"
+        android:strokeWidth="6"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"/>
+    
+    <!-- Second wave below -->
+    <path
+        android:pathData="M12,64 Q24,44 36,64 T60,64 T84,64"
+        android:strokeWidth="4"
+        android:strokeColor="#E6E6FA"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"/>
+</vector>
