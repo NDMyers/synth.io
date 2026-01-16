@@ -37,7 +37,13 @@ import androidx.compose.ui.unit.dp
 import com.synthio.app.R
 import com.synthio.app.audio.ChorusMode
 import com.synthio.app.audio.LooperState
+import android.app.Activity
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import com.synthio.app.ui.components.*
+import com.synthio.app.audio.ExportQuality
 import kotlinx.coroutines.delay
 import com.synthio.app.ui.theme.*
 import com.synthio.app.viewmodel.SynthViewModel
@@ -51,6 +57,48 @@ fun SynthesizerScreen(
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    
+    // Fullscreen keyboard state
+    var isFullscreenKeyboard by rememberSaveable { mutableStateOf(false) }
+    
+    // Detect orientation for auto-fullscreen
+    val configuration = LocalConfiguration.current
+    val context = LocalContext.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    
+    // Helper to lock/unlock orientation
+    fun setOrientation(landscape: Boolean) {
+        val activity = context as? Activity ?: return
+        activity.requestedOrientation = if (landscape) {
+            ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+    }
+    
+    // Auto-trigger fullscreen when rotated to landscape
+    LaunchedEffect(isLandscape) {
+        // Only toggle fullscreen keyboard if the rotation wasn't forced by the drum map modal
+        if (!viewModel.showDrumBeatMapModal) {
+            isFullscreenKeyboard = isLandscape
+        }
+    }
+    
+    // Initialize ViewModel context for audio export service
+    LaunchedEffect(Unit) {
+        viewModel.initContext(context)
+    }
+
+    // Auto-rotate for drum beat map modal
+    LaunchedEffect(viewModel.showDrumBeatMapModal) {
+        if (viewModel.showDrumBeatMapModal) {
+            setOrientation(true)
+        } else {
+            // Only revert if we're not explicitly in fullscreen keyboard mode (though that also follows landscape)
+            // Ideally we revert to portrait
+            setOrientation(false)
+        }
+    }
     
     // Accordion state - remember which sections are expanded (Synth mode)
     var oscillatorExpanded by rememberSaveable { mutableStateOf(true) }
@@ -90,8 +138,13 @@ fun SynthesizerScreen(
     val accentYellow = if (isDark) DarkPastelYellow else PastelYellow
     val accentCoral = if (isDark) DarkPastelCoral else PastelCoral
     
-    ModalNavigationDrawer(
-        drawerState = drawerState,
+    // Snackbar for export confirmation
+    val snackbarHostState = remember { SnackbarHostState() }
+    
+    // Root container for Z-ordering (Drawer -> Modals -> Snackbar)
+    Box(modifier = Modifier.fillMaxSize()) {
+        ModalNavigationDrawer(
+            drawerState = drawerState,
         gesturesEnabled = drawerState.isOpen, // Only enable gestures when drawer is open (to close it)
         scrimColor = Color.Black.copy(alpha = 0.5f),
         drawerContent = {
@@ -128,6 +181,18 @@ fun SynthesizerScreen(
                     // Wurlitzer props
                     isWurlitzerMode = viewModel.isWurlitzerMode,
                     onWurlitzerToggle = { viewModel.updateWurlitzerMode(it) },
+                    // Advanced settings
+                    onEditDrumPattern = { 
+                        scope.launch { drawerState.close() }
+                        viewModel.openDrumBeatMapModal()
+                    },
+                    // Exports
+                    hasActiveExports = viewModel.hasActiveExports(),
+                    exportCount = viewModel.exportJobs.size,
+                    onOpenExports = {
+                        scope.launch { drawerState.close() }
+                        viewModel.openExportsPage()
+                    },
                     onCloseMenu = { scope.launch { drawerState.close() } }
                 )
             }
@@ -190,6 +255,34 @@ fun SynthesizerScreen(
                 onDeleteAll = { viewModel.showDeleteAllConfirmation() },
                 onPlayStop = { viewModel.playStopLoop() },
                 onDismiss = { viewModel.dismissLooperModal() },
+                isDarkMode = isDark,
+                metronomeVolume = viewModel.metronomeVolume,
+                onMetronomeVolumeChange = { viewModel.updateMetronomeVolume(it) },
+                barCount = viewModel.looperBarCount,
+                onBarCountChange = { viewModel.updateLooperBarCount(it) },
+                onOpenExport = { viewModel.openExportModal() }
+            )
+        }
+        
+        // Export modal
+        if (viewModel.showExportModal) {
+            ExportModal(
+                tracks = viewModel.loopTracks,
+                selectedTracks = viewModel.selectedExportTracks,
+                includesDrums = viewModel.includeExportDrums,
+                onToggleTrack = { viewModel.toggleExportTrack(it) },
+                onSelectAll = { viewModel.selectAllExportTracks() },
+                onSetIncludeDrums = { viewModel.updateIncludeExportDrums(it) },
+                onStartExport = { quality -> 
+                    viewModel.startExport(quality)
+                    scope.launch {
+                        snackbarHostState.showSnackbar(
+                            message = "Export started! Check progress in Exports (Menu → Exports)",
+                            duration = SnackbarDuration.Short
+                        )
+                    }
+                },
+                onDismiss = { viewModel.closeExportModal() },
                 isDarkMode = isDark
             )
         }
@@ -213,9 +306,83 @@ fun SynthesizerScreen(
             )
         }
         
+        // Bar count change confirmation dialog
+        if (viewModel.showBarCountChangeDialog) {
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissBarCountChangeDialog() },
+                title = { Text("Change Bar Count?") },
+                text = { 
+                    Text("Changing the bar count to ${viewModel.pendingBarCount} will clear all recorded loops. Continue?") 
+                },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.confirmBarCountChange() }) {
+                        Text("Clear & Change", color = if (isDark) DarkPastelPink else PastelPink)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.dismissBarCountChangeDialog() }) {
+                        Text("Cancel")
+                    }
+                },
+                containerColor = if (isDark) DarkSurfaceCard else SurfaceWhite,
+                titleContentColor = if (isDark) DarkTextPrimary else TextPrimary,
+                textContentColor = if (isDark) DarkTextSecondary else TextSecondary
+            )
+        }
+        
+        // Exports page overlay
+        if (viewModel.showExportsPage) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .systemBarsPadding()
+            ) {
+                val context = LocalContext.current
+                ExportsPage(
+                    exportJobs = viewModel.exportJobs,
+                    onCancelJob = { viewModel.cancelExport(it) },
+                    onRemoveJob = { viewModel.removeExportJob(it) },
+                    onShareJob = { job ->
+                        job.outputUri?.let { uri ->
+                            val shareIntent = android.content.Intent().apply {
+                                action = android.content.Intent.ACTION_SEND
+                                putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                type = if (job.filename.endsWith(".wav")) "audio/wav" else "audio/aac"
+                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(
+                                android.content.Intent.createChooser(shareIntent, "Share Audio")
+                            )
+                        }
+                    },
+                    onClearCompleted = { viewModel.clearCompletedExports() },
+                    onClose = { viewModel.closeExportsPage() },
+                    isDarkMode = isDark,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        } else if (isFullscreenKeyboard) {
+            // Fullscreen keyboard view - shows when toggled or in landscape
+            FullscreenKeyboardScreen(
+                currentOctave = viewModel.octave,
+                onOctaveUp = { viewModel.octaveUp() },
+                onOctaveDown = { viewModel.octaveDown() },
+                onNoteOn = { note, shift -> viewModel.noteOn(note, shift) },
+                onNoteOff = { note, shift -> viewModel.noteOff(note, shift) },
+                onExitFullscreen = { 
+                    isFullscreenKeyboard = false
+                    setOrientation(false)
+                },
+                isChordMode = viewModel.isChordMode,
+                keySignature = viewModel.selectedKeySignature,
+                isDarkMode = isDark,
+                modifier = modifier.systemBarsPadding()
+            )
+        } else {
         Box(
             modifier = modifier
                 .fillMaxSize()
+                .systemBarsPadding()
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null
@@ -266,9 +433,11 @@ fun SynthesizerScreen(
                     
                     // Waveform Selector
                     WaveformSelector(
-                        selectedWaveform = viewModel.waveform,
-                        onWaveformSelected = { viewModel.updateWaveform(it) },
-                        modifier = Modifier.fillMaxWidth()
+                        selectedWaveforms = viewModel.activeWaveforms,
+                        onWaveformToggled = { viewModel.toggleWaveform(it) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
                     )
                     
                     Spacer(modifier = Modifier.height(16.dp))
@@ -1033,17 +1202,30 @@ fun SynthesizerScreen(
                 
                 Spacer(modifier = Modifier.height(8.dp))
                 
-                // Octave Selector
+                // Octave Selector with Fullscreen Button
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.Center
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     OctaveSelector(
                         currentOctave = viewModel.octave,
                         onOctaveUp = { viewModel.octaveUp() },
                         onOctaveDown = { viewModel.octaveDown() },
+                        isDarkMode = isDark
+                    )
+                    
+                    Spacer(modifier = Modifier.width(12.dp))
+                    
+                    // Fullscreen toggle button
+                    FullscreenKeyboardButton(
+                        isFullscreen = false,
+                        onClick = { 
+                            isFullscreenKeyboard = true
+                            setOrientation(true)
+                        },
                         isDarkMode = isDark
                     )
                 }
@@ -1065,9 +1247,49 @@ fun SynthesizerScreen(
                 )
                 
                 Spacer(modifier = Modifier.height(24.dp))
-                }
             }
         }
+        } // end else (non-fullscreen mode)
+        
+        // Drum beat map modal - placed here to ensure z-index on top
+        if (viewModel.showDrumBeatMapModal) {
+            DrumBeatMapModal(
+                kickPattern = viewModel.kickPattern,
+                snarePattern = viewModel.snarePattern,
+                hiHatPattern = viewModel.hiHatPattern,
+                kickVolume = viewModel.kickVolume,
+                snareVolume = viewModel.snareVolume,
+                hiHatVolume = viewModel.hiHatVolume,
+                isDrumPlaying = viewModel.isDrumEnabled,
+                onTogglePlay = { viewModel.toggleDrumMachine() },
+                onToggleStep = { instrument, step -> viewModel.toggleDrumStep(instrument, step) },
+                onInstrumentVolumeChange = { instrument, volume -> viewModel.updateDrumInstrumentVolume(instrument, volume) },
+                onResetPattern = { viewModel.resetDrumPattern() },
+                onDismiss = { viewModel.closeDrumBeatMapModal() },
+                isDarkMode = isDark,
+                modifier = modifier
+            )
+        }
+        
+    }
+    }
+    
+    // Snackbar for notifications - Z-ordered on top of everything
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .padding(bottom = 80.dp),
+            snackbar = { data ->
+                Snackbar(
+                    snackbarData = data,
+                    containerColor = if (isDark) DarkSurfaceCard else SurfaceWhite,
+                    contentColor = if (isDark) DarkTextPrimary else TextPrimary,
+                    shape = RoundedCornerShape(12.dp)
+                )
+            }
+        )
+    }
     }
 }
 
@@ -1149,6 +1371,7 @@ private fun StickyHeader(
                         hasLoop = viewModel.looperHasLoop,
                         currentBeat = viewModel.looperCurrentBeat,
                         onClick = { viewModel.loopButtonClicked() },
+                        onCancelRecording = { viewModel.cancelRecording() },
                         isDarkMode = isDark,
                         accentColor = accentMint
                     )
@@ -1357,6 +1580,7 @@ private fun LoopButton(
     hasLoop: Boolean,
     currentBeat: Int,
     onClick: () -> Unit,
+    onCancelRecording: () -> Unit,
     isDarkMode: Boolean,
     accentColor: Color,
     modifier: Modifier = Modifier
@@ -1388,11 +1612,17 @@ private fun LoopButton(
             .clip(CircleShape)
             .background(backgroundColor)
             .border(2.dp, borderColor, CircleShape)
-            .clickable(enabled = !isActive) { onClick() },
+            .clickable { 
+                if (isActive) {
+                    onCancelRecording()
+                } else {
+                    onClick()
+                }
+            },
         contentAlignment = Alignment.Center
     ) {
         if (isActive) {
-            // Show beat counter during pre-count or recording
+            // Show beat counter during pre-count or recording - tap to cancel
             Text(
                 text = "${currentBeat + 1}",
                 style = SynthTypography.label.copy(

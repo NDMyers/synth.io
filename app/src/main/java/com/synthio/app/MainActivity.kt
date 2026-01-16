@@ -67,7 +67,6 @@ class MainActivity : ComponentActivity() {
                     viewModel = synthViewModel,
                     modifier = Modifier
                         .fillMaxSize()
-                        .systemBarsPadding()
                 )
             }
         }

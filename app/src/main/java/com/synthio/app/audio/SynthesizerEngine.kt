@@ -77,6 +77,12 @@ object SynthesizerEngine {
         }
     }
     
+    fun toggleWaveform(waveform: Waveform, enabled: Boolean) {
+        if (isCreated) {
+            nativeToggleWaveform(waveform.ordinal, enabled)
+        }
+    }
+
     fun setPulseWidth(width: Float) {
         if (isCreated) {
             nativeSetPulseWidth(width)
@@ -259,6 +265,12 @@ object SynthesizerEngine {
         }
     }
     
+    fun setMetronomeVolume(volume: Float) {
+        if (isCreated) {
+            nativeSetMetronomeVolume(volume)
+        }
+    }
+    
     // ===== DRUM MACHINE CONTROLS =====
     
     fun setDrumEnabled(enabled: Boolean) {
@@ -294,6 +306,40 @@ object SynthesizerEngine {
     fun setHiHat16thNotes(is16th: Boolean) {
         if (isCreated) {
             nativeSetHiHat16thNotes(is16th)
+        }
+    }
+    
+    // ===== DRUM PATTERN CONTROLS =====
+    
+    fun setDrumStep(instrument: Int, step: Int, velocity: Float) {
+        if (isCreated) {
+            nativeSetDrumStep(instrument, step, velocity)
+        }
+    }
+    
+    fun getDrumStep(instrument: Int, step: Int): Float {
+        return if (isCreated) nativeGetDrumStep(instrument, step) else 0f
+    }
+    
+    fun toggleDrumStep(instrument: Int, step: Int) {
+        if (isCreated) {
+            nativeToggleDrumStep(instrument, step)
+        }
+    }
+    
+    fun setDrumInstrumentVolume(instrument: Int, volume: Float) {
+        if (isCreated) {
+            nativeSetDrumInstrumentVolume(instrument, volume)
+        }
+    }
+    
+    fun getDrumInstrumentVolume(instrument: Int): Float {
+        return if (isCreated) nativeGetDrumInstrumentVolume(instrument) else 0f
+    }
+    
+    fun resetDrumPattern() {
+        if (isCreated) {
+            nativeResetDrumPattern()
         }
     }
     
@@ -409,6 +455,12 @@ object SynthesizerEngine {
         }
     }
     
+    fun looperCancelRecording() {
+        if (isCreated) {
+            nativeLooperCancelRecording()
+        }
+    }
+    
     fun looperSetTrackVolume(trackIndex: Int, volume: Float) {
         if (isCreated) {
             nativeLooperSetTrackVolume(trackIndex, volume)
@@ -469,6 +521,41 @@ object SynthesizerEngine {
         return 0
     }
     
+    fun looperSetBarCount(bars: Int) {
+        if (isCreated) {
+            nativeLooperSetBarCount(bars)
+        }
+    }
+    
+    fun looperGetBarCount(): Int {
+        if (isCreated) {
+            return nativeLooperGetBarCount()
+        }
+        return 4 // Default
+    }
+    
+    /**
+     * Get mixed audio buffer for export.
+     * @param trackMask Bitmask of tracks to include (bit 0 = track 0, etc.)
+     * @return Interleaved stereo float samples, or null if no content
+     */
+    fun looperGetMixedBuffer(trackMask: Int): FloatArray? {
+        if (isCreated) {
+            return nativeLooperGetMixedBuffer(trackMask)
+        }
+        return null
+    }
+    
+    /**
+     * Get the size of the loop buffer (interleaved stereo samples)
+     */
+    fun looperGetBufferSize(): Long {
+        if (isCreated) {
+            return nativeLooperGetBufferSize()
+        }
+        return 0
+    }
+    
     // ===== NATIVE FUNCTION DECLARATIONS =====
     
     private external fun nativeCreate()
@@ -481,6 +568,7 @@ object SynthesizerEngine {
     
     // Oscillator
     private external fun nativeSetWaveform(waveform: Int)
+    private external fun nativeToggleWaveform(waveform: Int, enabled: Boolean)
     private external fun nativeSetPulseWidth(width: Float)
     private external fun nativeSetSubOscLevel(level: Float)
     private external fun nativeSetNoiseLevel(level: Float)
@@ -528,6 +616,7 @@ object SynthesizerEngine {
     // Volume
     private external fun nativeSetSynthVolume(volume: Float)
     private external fun nativeSetDrumVolume(volume: Float)
+    private external fun nativeSetMetronomeVolume(volume: Float)
     
     // Drum machine
     private external fun nativeSetDrumEnabled(enabled: Boolean)
@@ -536,6 +625,14 @@ object SynthesizerEngine {
     private external fun nativeSetSnareEnabled(enabled: Boolean)
     private external fun nativeSetHiHatEnabled(enabled: Boolean)
     private external fun nativeSetHiHat16thNotes(is16th: Boolean)
+    
+    // Drum pattern controls
+    private external fun nativeSetDrumStep(instrument: Int, step: Int, velocity: Float)
+    private external fun nativeGetDrumStep(instrument: Int, step: Int): Float
+    private external fun nativeToggleDrumStep(instrument: Int, step: Int)
+    private external fun nativeSetDrumInstrumentVolume(instrument: Int, volume: Float)
+    private external fun nativeGetDrumInstrumentVolume(instrument: Int): Float
+    private external fun nativeResetDrumPattern()
     
     // Wurlitzer
     private external fun nativeSetWurlitzerMode(enabled: Boolean)
@@ -559,6 +656,7 @@ object SynthesizerEngine {
     private external fun nativeLooperStartRecordingTrack(trackIndex: Int)
     private external fun nativeLooperClearTrack(trackIndex: Int)
     private external fun nativeLooperClearAllTracks()
+    private external fun nativeLooperCancelRecording()
     private external fun nativeLooperSetTrackVolume(trackIndex: Int, volume: Float)
     private external fun nativeLooperSetTrackMuted(trackIndex: Int, muted: Boolean)
     private external fun nativeLooperSetTrackSolo(trackIndex: Int, solo: Boolean)
@@ -568,6 +666,10 @@ object SynthesizerEngine {
     private external fun nativeLooperIsTrackSolo(trackIndex: Int): Boolean
     private external fun nativeLooperGetActiveRecordingTrack(): Int
     private external fun nativeLooperGetUsedTrackCount(): Int
+    private external fun nativeLooperSetBarCount(bars: Int)
+    private external fun nativeLooperGetBarCount(): Int
+    private external fun nativeLooperGetMixedBuffer(trackMask: Int): FloatArray?
+    private external fun nativeLooperGetBufferSize(): Long
 }
 
 enum class Waveform {

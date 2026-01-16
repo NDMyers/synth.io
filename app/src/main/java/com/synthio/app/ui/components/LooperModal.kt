@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -46,7 +47,12 @@ fun LooperModal(
     onDeleteAll: () -> Unit,
     onPlayStop: () -> Unit,
     onDismiss: () -> Unit,
-    isDarkMode: Boolean
+    isDarkMode: Boolean,
+    metronomeVolume: Float,
+    onMetronomeVolumeChange: (Float) -> Unit,
+    barCount: Int = 4,
+    onBarCountChange: (Int) -> Unit = {},
+    onOpenExport: () -> Unit = {}
 ) {
     val backgroundColor = if (isDarkMode) DarkSurface else SurfaceWhite
     val textColor = if (isDarkMode) DarkTextPrimary else TextPrimary
@@ -59,90 +65,157 @@ fun LooperModal(
     val allTracksFull = usedTrackCount >= 4
     val isRecording = looperState == LooperState.RECORDING || looperState == LooperState.PRE_COUNT
     
-    Dialog(
-        onDismissRequest = { if (!isRecording) onDismiss() },
-        properties = DialogProperties(
-            dismissOnBackPress = !isRecording,
-            dismissOnClickOutside = !isRecording,
-            usePlatformDefaultWidth = false
-        )
+    // Use a full-screen Box instead of Dialog to allow Sandbox z-ordering
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clickable(enabled = !isRecording, onClick = onDismiss) // Scrim click to dismiss
+            .background(Color.Black.copy(alpha = 0.6f))
+            .padding(16.dp), // Safe area
+        contentAlignment = Alignment.Center
     ) {
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxWidth(0.95f)
                 .clip(RoundedCornerShape(24.dp))
                 .background(backgroundColor)
-                .padding(20.dp)
+                .clickable(enabled = false, onClick = {}) // consume clicks inside the card
+                .padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Column(
-                modifier = Modifier.fillMaxWidth()
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                // Header
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Looper",
-                        style = SynthTypography.heading.copy(
-                            color = textColor,
-                            fontSize = 24.sp
-                        )
+                Text(
+                    text = "Looper",
+                    style = SynthTypography.heading.copy(
+                        color = textColor,
+                        fontSize = 22.sp
                     )
-                    
-                    if (!isRecording) {
+                )
+                
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Delete all button
+                    if (hasAnyContent) {
                         IconButton(
-                            onClick = onDismiss,
+                            onClick = { onDeleteAll() },
                             modifier = Modifier.size(36.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Close",
-                                tint = textColor
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "Delete all tracks",
+                                tint = Color.Red.copy(alpha = 0.7f)
                             )
                         }
                     }
-                }
-                
-                Spacer(modifier = Modifier.height(8.dp))
-                
-                // Status indicator
-                if (isRecording) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(bottom = 8.dp)
+                    
+                    IconButton(
+                        onClick = onDismiss,
+                        enabled = !isRecording
                     ) {
-                        val recordingDot by animateColorAsState(
-                            targetValue = if (currentBeat % 2 == 0) Color.Red else Color.Red.copy(alpha = 0.5f),
-                            label = "recording_dot"
-                        )
-                        Box(
-                            modifier = Modifier
-                                .size(12.dp)
-                                .clip(CircleShape)
-                                .background(recordingDot)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = if (looperState == LooperState.PRE_COUNT) {
-                                "Count-in: ${currentBeat + 1}/4"
-                            } else {
-                                "Recording Track ${activeRecordingTrack + 1} - Bar ${currentBar + 1}/4"
-                            },
-                            style = SynthTypography.label.copy(color = accentColor),
-                            fontWeight = FontWeight.Medium
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close",
+                            tint = if (isRecording) secondaryTextColor.copy(alpha = 0.3f) else secondaryTextColor
                         )
                     }
-                } else if (looperState == LooperState.PLAYING) {
+                }
+            }
+            
+            // Status text based on state
+            when (looperState) {
+                LooperState.PRE_COUNT -> {
                     Text(
-                        text = "Playing - Bar ${currentBar + 1}/4, Beat ${currentBeat + 1}/4",
+                        text = "Get Ready... Beat ${currentBeat + 1}/4",
+                        style = SynthTypography.label.copy(color = accentColor),
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                }
+                LooperState.RECORDING -> {
+                    Text(
+                        text = "🔴 Recording - Bar ${currentBar + 1}/$barCount, Beat ${currentBeat + 1}/4",
+                        style = SynthTypography.label.copy(color = Color.Red),
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                }
+                LooperState.PLAYING -> {
+                    Text(
+                        text = "Playing - Bar ${currentBar + 1}/$barCount, Beat ${currentBeat + 1}/4",
                         style = SynthTypography.label.copy(color = secondaryTextColor),
                         modifier = Modifier.padding(bottom = 8.dp)
                     )
                 }
+                else -> {}
+            }
                 
-                Spacer(modifier = Modifier.height(12.dp))
+                
+            // Bar Count Selector
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+            ) {
+                Text(
+                    text = "Bars",
+                    style = SynthTypography.label.copy(color = secondaryTextColor),
+                    modifier = Modifier.width(80.dp)
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    (1..8).forEach { bars ->
+                        val isSelected = barCount == bars
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(32.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(
+                                    if (isSelected) accentColor
+                                    else cardColor
+                                )
+                                .clickable { onBarCountChange(bars) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "$bars",
+                                style = SynthTypography.smallLabel.copy(
+                                    color = if (isSelected) Color.White else secondaryTextColor,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+                
+            // Metronome Volume
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+            ) {
+                Text(
+                    text = "Metronome",
+                    style = SynthTypography.label.copy(color = secondaryTextColor),
+                    modifier = Modifier.width(80.dp)
+                )
+                Slider(
+                    value = metronomeVolume,
+                    onValueChange = onMetronomeVolumeChange,
+                    valueRange = 0f..1f,
+                    modifier = Modifier.weight(1f),
+                    colors = SliderDefaults.colors(
+                        thumbColor = accentColor,
+                        activeTrackColor = accentColor,
+                        inactiveTrackColor = accentColor.copy(alpha = 0.2f)
+                    )
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
                 
                 // Track rows
                 Column(
@@ -196,24 +269,43 @@ fun LooperModal(
                     
                     // Play/Stop button
                     if (hasAnyContent && !isRecording) {
-                        Button(
-                            onClick = onPlayStop,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = accentColor
-                            ),
-                            modifier = Modifier.height(44.dp)
-                        ) {
-                            Text(
-                                text = if (looperState == LooperState.PLAYING) "Stop" else "Play",
-                                style = SynthTypography.label.copy(color = textColor)
-                            )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // Export button
+                            IconButton(
+                                onClick = onOpenExport,
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .background(
+                                        color = if (isDarkMode) DarkPastelMint.copy(alpha = 0.2f) 
+                                               else PastelMint.copy(alpha = 0.3f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Share,
+                                    contentDescription = "Export",
+                                    tint = if (isDarkMode) DarkPastelMint else PastelMint
+                                )
+                            }
+                            
+                            Button(
+                                onClick = onPlayStop,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = accentColor
+                                ),
+                                modifier = Modifier.height(44.dp)
+                            ) {
+                                Text(
+                                    text = if (looperState == LooperState.PLAYING) "Stop" else "Play",
+                                    style = SynthTypography.label.copy(color = textColor)
+                                )
+                            }
                         }
                     }
                 }
             }
         }
     }
-}
 
 @Composable
 private fun LooperTrackRow(

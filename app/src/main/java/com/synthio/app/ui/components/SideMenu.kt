@@ -17,7 +17,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.synthio.app.audio.MusicConstants.ChordType
 import com.synthio.app.audio.MusicConstants.KeySignature
 import com.synthio.app.ui.theme.*
@@ -73,6 +75,12 @@ fun SideMenuContent(
     // Wurlitzer props
     isWurlitzerMode: Boolean,
     onWurlitzerToggle: (Boolean) -> Unit,
+    // Advanced settings
+    onEditDrumPattern: () -> Unit,
+    // Exports
+    hasActiveExports: Boolean = false,
+    exportCount: Int = 0,
+    onOpenExports: () -> Unit = {},
     onCloseMenu: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -298,6 +306,87 @@ fun SideMenuContent(
                 ),
                 modifier = Modifier.padding(vertical = 4.dp)
             )
+        }
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        // ========== ADVANCED SETTINGS SECTION ==========
+        Text(
+            text = "Advanced Settings",
+            style = SynthTypography.subheading.copy(color = textColor),
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+        
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(SynthShapes.large)
+                .background(cardColor.copy(alpha = 0.5f))
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Edit Drum Pattern button
+            Button(
+                onClick = onEditDrumPattern,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isDarkMode) DarkPastelPeach else PastelPeach
+                ),
+                shape = SynthShapes.medium
+            ) {
+                Text(
+                    text = "Edit Drum Pattern",
+                    style = SynthTypography.label.copy(
+                        color = if (isDarkMode) DarkTextOnLight else TextPrimary
+                    )
+                )
+            }
+            
+            // Exports button
+            Button(
+                onClick = onOpenExports,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isDarkMode) DarkPastelMint else PastelMint
+                ),
+                shape = SynthShapes.medium
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = "Exports",
+                        style = SynthTypography.label.copy(
+                            color = if (isDarkMode) DarkTextOnLight else TextPrimary
+                        )
+                    )
+                    if (exportCount > 0) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(20.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    if (hasActiveExports) {
+                                        if (isDarkMode) DarkPastelPink else PastelPink
+                                    } else {
+                                        if (isDarkMode) DarkTextSecondary else TextSecondary
+                                    }
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "$exportCount",
+                                style = SynthTypography.smallLabel.copy(
+                                    color = if (isDarkMode) DarkTextOnLight else Color.White,
+                                    fontSize = 10.sp
+                                )
+                            )
+                        }
+                    }
+                }
+            }
         }
         
         Spacer(modifier = Modifier.height(16.dp))

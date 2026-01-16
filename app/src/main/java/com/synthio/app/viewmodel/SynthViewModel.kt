@@ -1,12 +1,16 @@
 package com.synthio.app.viewmodel
 
 import android.content.Context
+import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.synthio.app.audio.AudioExportService
 import com.synthio.app.audio.ChorusMode
 import com.synthio.app.audio.LooperState
 import com.synthio.app.audio.MidiHandler
@@ -16,7 +20,12 @@ import com.synthio.app.audio.MusicConstants.KeySignature
 import com.synthio.app.audio.MusicConstants.KeyboardNote
 import com.synthio.app.audio.SynthesizerEngine
 import com.synthio.app.audio.Waveform
+import com.synthio.app.audio.ExportJob
+import com.synthio.app.audio.ExportQuality
+import com.synthio.app.audio.ExportStatus
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 
 /**
  * State for a single loop track in the multi-track looper
@@ -29,6 +38,15 @@ data class LoopTrackState(
 )
 
 class SynthViewModel : ViewModel() {
+    
+    // ===== APPLICATION CONTEXT =====
+    private var appContext: Context? = null
+    private var audioExportService: AudioExportService? = null
+    
+    fun initContext(context: Context) {
+        appContext = context.applicationContext
+        audioExportService = AudioExportService(appContext!!)
+    }
     
     // ===== MIDI =====
     private var midiHandler: MidiHandler? = null
@@ -61,8 +79,12 @@ class SynthViewModel : ViewModel() {
         private set
     
     // ===== OSCILLATOR PARAMETERS =====
-    var waveform by mutableStateOf(Waveform.SAWTOOTH)
-        private set
+    // ===== OSCILLATOR PARAMETERS =====
+    val activeWaveforms = mutableStateListOf(Waveform.SAWTOOTH)
+    
+    // Legacy support property (returns first active or default)
+    val waveform: Waveform
+        get() = activeWaveforms.firstOrNull() ?: Waveform.SAWTOOTH
     
     var pulseWidth by mutableFloatStateOf(0.5f)
         private set
@@ -216,6 +238,43 @@ class SynthViewModel : ViewModel() {
     var drumVolume by mutableFloatStateOf(0.7f)
         private set
     
+    var metronomeVolume by mutableFloatStateOf(0.5f)
+        private set
+    
+    // Looper bar count (1-8 bars)
+    var looperBarCount by mutableIntStateOf(4)
+        private set
+    
+    // Dialog for confirming bar count change when loops exist
+    var showBarCountChangeDialog by mutableStateOf(false)
+        private set
+    var pendingBarCount by mutableIntStateOf(4)
+        private set
+    
+    // ===== DRUM BEAT MAP =====
+    var showDrumBeatMapModal by mutableStateOf(false)
+    
+    // Pattern state (16 steps per instrument, 0f = off, 1f = on)
+    // Instrument indices: 0 = Kick, 1 = Snare, 2 = Hi-Hat
+    var kickPattern = mutableStateListOf(*Array(16) { if (it == 0 || it == 8) 1f else 0f })
+        private set
+    var snarePattern = mutableStateListOf(*Array(16) { if (it == 4 || it == 12) 1f else 0f })
+        private set
+    var hiHatPattern = mutableStateListOf(*Array(16) { 
+        when (it % 4) {
+            0 -> 1.0f; 1 -> 0.5f; 2 -> 0.7f; else -> 0.4f 
+        }
+    })
+        private set
+    
+    // Per-instrument volumes
+    var kickVolume by mutableFloatStateOf(1f)
+        private set
+    var snareVolume by mutableFloatStateOf(1f)
+        private set
+    var hiHatVolume by mutableFloatStateOf(1f)
+        private set
+    
     // ===== LOOPER =====
     var looperState by mutableStateOf(LooperState.IDLE)
         private set
@@ -253,6 +312,22 @@ class SynthViewModel : ViewModel() {
         private set
     
     var isMidiDeviceConnected by mutableStateOf(false)
+        private set
+    
+    // ===== AUDIO EXPORT STATE =====
+    var showExportModal by mutableStateOf(false)
+        private set
+    
+    var selectedExportTracks = mutableStateListOf<Int>()
+        private set
+    
+    var includeExportDrums by mutableStateOf(false)
+        private set
+    
+    var exportJobs = mutableStateListOf<ExportJob>()
+        private set
+    
+    var showExportsPage by mutableStateOf(false)
         private set
     
     // Track currently playing notes to handle chord mode note offs
@@ -451,48 +526,147 @@ class SynthViewModel : ViewModel() {
         isDarkMode = !isDarkMode
     }
     
-    fun noteOn(note: KeyboardNote) {
+    fun noteOn(note: KeyboardNote, octaveShift: Int = 0) {
         // In chord mode, only allow playable notes
         if (isChordMode && !MusicConstants.isNotePlayableInKey(note, selectedKeySignature)) {
             return
         }
         
-        // Calculate octave offset from base octave 4
-        val octaveOffset = (octave - 4) * 12
+        // Calculate octave offset from base octave 4 plus any shift
+        val octaveOffset = (octave - 4 + octaveShift) * 12
         
         val notesToPlay = MusicConstants.getNotesToPlay(note, isChordMode, selectedKeySignature, selectedChordType)
             .map { it + octaveOffset } // Apply octave transposition
-        activeNotes[note] = notesToPlay
         
-        // Update chord display
+        // Store mapped notes with the octave shift so we can turn them off correctly
+        // We need a unique key for the map if we want to support same note in different octaves
+        // But activeNotes assumes just KeyboardNote key. 
+        // For now, let's just append to the list if key exists, or create new.
+        // ACTUALLY: If we play C4 and C5, both are KeyboardNote.C4. 
+        // We need separate tracking. Map key should probably be Pair<KeyboardNote, Int> (note, shift).
+        // For minimal refactor, let's just assume simple monophonic per key-octave for now,
+        // or just accept that re-triggering same note name in different octave might overlap in tracking if we don't change the map key.
+        // Changing map key is safer.
+        
+        // To avoid breaking change, let's handle the simple case first:
+        // We need to track precisely which MIDI notes were turned on for this specific interaction.
+        // But activeNotes is used for noteOff lookup.
+        
+        // Let's refactor activeNotes key to be String "NoteName+Shift" or similar, OR just handle it purely via MIDI?
+        // Existing activeNotes is MutableMap<KeyboardNote, List<Int>>.
+        // If I change it, I break usage elsewhere? No, it's private.
+        
+        // Wait, simpler approach: 
+        // NoteOff needs to know which MIDI notes to turn off.
+        // If I use (note, shift) as key... 
+        
+        // Let's try to not overengineer. If I press C4 (shift 0) -> plays 60. activeNotes[C4] = [60].
+        // If I press C5 (shift 1) -> plays 72. activeNotes[C4] = [72]? No, that overwrites.
+        // So I DO need a better key.
+        
+        // Let's change activeNotes key to a data class or Pair.
+        // But `MusicConstants.KeyboardNote` is the key type everywhere.
+        // I'll leave activeNotes as is for now but WARNING: playing C4 and C5 simultaneously might conflict in tracking.
+        // For fullscreen keyboard, they are distinct touches.
+        
+        // Actually, I can allow multiple lists? 
+        // activeNotes[note] can be List<Int> of ALL active midi notes for that key name?
+        // noteOff(note, shift) would only remove the relevant ones?
+        // That's tricky because we don't know which were triggered by which shift unless we store that.
+        
+        // Alternative: Just fire MIDI notes directly from FullscreenKeyboard?
+        // But we want chord mode support.
+        
+        // Let's assume for now that FullscreenKeyboard won't be used with Chord Mode heavily across octaves?
+        // Or better: Let's do the easy fix: `noteOn` creates text representation or specialized key.
+        
+        // Let's just update the map to use a composite key if possible.
+        // Private val activeNotes = mutableMapOf<Any, List<Int>>() ?
+        
+        // OK, I will stick to the requested simple change: add `octaveShift` to signature.
+        // And I'll update logic to simply ADD to the list for that key if it exists.
+        // noteOff will try to remove specific MIDI notes corresponding to that shift.
+        
+        val newNotes = notesToPlay
+        val existingNotes = activeNotes[note] ?: emptyList()
+        activeNotes[note] = existingNotes + newNotes
+        
+        // Update chord display (only for base octave or just show chord name regardless)
         if (isChordMode) {
             currentChordName = MusicConstants.getChordName(note, selectedKeySignature, selectedChordType)
         } else {
             currentChordName = null
         }
         
-        notesToPlay.forEach { midiNote ->
+        newNotes.forEach { midiNote ->
             val frequency = MusicConstants.midiNoteToFrequency(midiNote)
             SynthesizerEngine.noteOn(midiNote, frequency)
         }
     }
     
-    fun noteOff(note: KeyboardNote) {
-        activeNotes[note]?.forEach { midiNote ->
-            SynthesizerEngine.noteOff(midiNote)
-        }
-        activeNotes.remove(note)
+    fun noteOff(note: KeyboardNote, octaveShift: Int = 0) {
+        // Calculate which midi notes correspond to this note+shift
+        val octaveOffset = (octave - 4 + octaveShift) * 12
+        // We can't regenerate randomness if chord had it, but standard chords are deterministic.
+        // However, instead of recalculating, we should ideally look up what was played.
         
-        if (activeNotes.isEmpty()) {
+        // Since we appended to activeNotes[note], we now need to find and remove the subset.
+        // Re-calculating expected MIDI notes:
+        val expectedMidiNotes = MusicConstants.getNotesToPlay(note, isChordMode, selectedKeySignature, selectedChordType)
+            .map { it + octaveOffset }
+            
+        val currentActive = activeNotes[note] ?: return
+        
+        // Find matches and turn them off
+        expectedMidiNotes.forEach { midiNote ->
+            if (currentActive.contains(midiNote)) {
+                SynthesizerEngine.noteOff(midiNote)
+            }
+        }
+        
+        // Update map - remove the notes we just stopped
+        val remaining = currentActive - expectedMidiNotes.toSet()
+        if (remaining.isEmpty()) {
+            activeNotes.remove(note)
             currentChordName = null
+        } else {
+            activeNotes[note] = remaining
         }
     }
     
     // ===== OSCILLATOR UPDATE FUNCTIONS =====
     
+    fun toggleWaveform(waveform: Waveform) {
+        if (activeWaveforms.contains(waveform)) {
+            // Prevent removing the last waveform to ensure sound output
+            if (activeWaveforms.size > 1) {
+                activeWaveforms.remove(waveform)
+                SynthesizerEngine.toggleWaveform(waveform, false)
+            }
+        } else {
+            activeWaveforms.add(waveform)
+            SynthesizerEngine.toggleWaveform(waveform, true)
+        }
+    }
+    
+    /**
+     * Updates the waveform (Legavy: Exclusive selection)
+     */
     fun updateWaveform(newWaveform: Waveform) {
-        waveform = newWaveform
-        SynthesizerEngine.setWaveform(newWaveform)
+        // Clear all others
+        val toRemove = activeWaveforms.toList()
+        toRemove.forEach { 
+            if (it != newWaveform) {
+                activeWaveforms.remove(it)
+                SynthesizerEngine.toggleWaveform(it, false)
+            }
+        }
+        
+        // Ensure new one is active
+        if (!activeWaveforms.contains(newWaveform)) {
+            activeWaveforms.add(newWaveform)
+            SynthesizerEngine.toggleWaveform(newWaveform, true)
+        }
     }
     
     fun updatePulseWidth(width: Float) {
@@ -660,6 +834,50 @@ class SynthViewModel : ViewModel() {
         SynthesizerEngine.setDrumVolume(volume)
     }
     
+    // ===== DRUM BEAT MAP FUNCTIONS =====
+    
+    fun toggleDrumStep(instrument: Int, step: Int) {
+        SynthesizerEngine.toggleDrumStep(instrument, step)
+        // Sync local state
+        when (instrument) {
+            0 -> kickPattern[step] = if (kickPattern[step] > 0f) 0f else 1f
+            1 -> snarePattern[step] = if (snarePattern[step] > 0f) 0f else 1f
+            2 -> hiHatPattern[step] = if (hiHatPattern[step] > 0f) 0f else 1f
+        }
+    }
+    
+    fun updateDrumInstrumentVolume(instrument: Int, volume: Float) {
+        SynthesizerEngine.setDrumInstrumentVolume(instrument, volume)
+        when (instrument) {
+            0 -> kickVolume = volume
+            1 -> snareVolume = volume
+            2 -> hiHatVolume = volume
+        }
+    }
+    
+    fun resetDrumPattern() {
+        SynthesizerEngine.resetDrumPattern()
+        // Sync local state
+        for (i in 0 until 16) {
+            kickPattern[i] = if (i == 0 || i == 8) 1f else 0f
+            snarePattern[i] = if (i == 4 || i == 12) 1f else 0f
+            hiHatPattern[i] = when (i % 4) {
+                0 -> 1.0f; 1 -> 0.5f; 2 -> 0.7f; else -> 0.4f
+            }
+        }
+        kickVolume = 1f
+        snareVolume = 1f
+        hiHatVolume = 1f
+    }
+    
+    fun openDrumBeatMapModal() {
+        showDrumBeatMapModal = true
+    }
+    
+    fun closeDrumBeatMapModal() {
+        showDrumBeatMapModal = false
+    }
+    
     // ===== DRUM MACHINE FUNCTIONS =====
     
     fun toggleDrumMachine() {
@@ -685,6 +903,20 @@ class SynthViewModel : ViewModel() {
     fun toggleHiHatMode() {
         isHiHat16thNotes = !isHiHat16thNotes
         SynthesizerEngine.setHiHat16thNotes(isHiHat16thNotes)
+        
+        // Sync pattern: 8th notes mode clears odd steps, 16th note mode fills them
+        for (i in 0 until 16) {
+            if (i % 2 != 0) { // Odd steps are the 16th note subdivisions
+                val isActive = hiHatPattern[i] > 0f
+                if (isHiHat16thNotes) {
+                    // Enable if not active (auto-fill 16ths)
+                    if (!isActive) toggleDrumStep(2, i)
+                } else {
+                    // Disable if active (restrict to 8ths)
+                    if (isActive) toggleDrumStep(2, i)
+                }
+            }
+        }
     }
     
     fun updateDrumBPM(bpm: Float) {
@@ -692,16 +924,46 @@ class SynthViewModel : ViewModel() {
         SynthesizerEngine.setDrumBPM(bpm)
     }
     
+    fun updateMetronomeVolume(volume: Float) {
+        metronomeVolume = volume
+        SynthesizerEngine.setMetronomeVolume(volume)
+    }
+    
+    fun updateLooperBarCount(bars: Int) {
+        val hasLoops = loopTracks.any { it.hasContent }
+        if (hasLoops) {
+            // Show confirmation dialog if there are existing loops
+            pendingBarCount = bars
+            showBarCountChangeDialog = true
+        } else {
+            // No loops, just change directly
+            looperBarCount = bars.coerceIn(1, 8)
+            SynthesizerEngine.looperSetBarCount(looperBarCount)
+        }
+    }
+    
+    fun confirmBarCountChange() {
+        // Clear all tracks and apply new bar count
+        loopTracks.forEachIndexed { index, _ ->
+            SynthesizerEngine.looperClearTrack(index)
+        }
+        // Update loopTracks to show all are now empty
+        loopTracks = List(4) { LoopTrackState() }
+        looperBarCount = pendingBarCount.coerceIn(1, 8)
+        SynthesizerEngine.looperSetBarCount(looperBarCount)
+        showBarCountChangeDialog = false
+    }
+    
+    fun dismissBarCountChangeDialog() {
+        showBarCountChangeDialog = false
+    }
+    
     // ===== LOOPER CONTROLS =====
     
     fun loopButtonClicked() {
-        if (looperHasLoop) {
-            // Loop exists - show the looper modal for multi-track management
-            showLooperModal = true
-        } else {
-            // No loop yet - start recording track 0 immediately
-            startRecordingTrack(0)
-        }
+        // ALWAYS show looper modal to let user pick track
+        // User requested removing the default "start recording track 0" logic
+        showLooperModal = true
     }
     
     fun dismissLoopOverrideDialog() {
@@ -810,6 +1072,11 @@ class SynthViewModel : ViewModel() {
         updateLooperState()
     }
     
+    fun cancelRecording() {
+        SynthesizerEngine.looperCancelRecording()
+        updateLooperState()
+    }
+    
     fun refreshLoopTrackStates() {
         loopTracks = List(4) { index ->
             LoopTrackState(
@@ -901,6 +1168,7 @@ class SynthViewModel : ViewModel() {
         // Volume
         SynthesizerEngine.setSynthVolume(synthVolume)
         SynthesizerEngine.setDrumVolume(drumVolume)
+        SynthesizerEngine.setMetronomeVolume(metronomeVolume)
         
         // Drum machine
         SynthesizerEngine.setDrumBPM(drumBPM)
@@ -917,6 +1185,173 @@ class SynthViewModel : ViewModel() {
         SynthesizerEngine.setWurliReverb(wurliReverbSize, wurliReverbMix)
         SynthesizerEngine.setWurliDelay(wurliDelayTime, wurliDelayFeedback, wurliDelayMix)
         SynthesizerEngine.setWurliVolume(wurliVolume)
+    }
+    
+    // ===== AUDIO EXPORT FUNCTIONS =====
+    
+    fun openExportModal() {
+        // Pre-select tracks that have content
+        selectedExportTracks.clear()
+        loopTracks.forEachIndexed { index, track ->
+            if (track.hasContent) {
+                selectedExportTracks.add(index)
+            }
+        }
+        includeExportDrums = isDrumEnabled
+        showExportModal = true
+    }
+    
+    fun closeExportModal() {
+        showExportModal = false
+    }
+    
+    fun toggleExportTrack(trackIndex: Int) {
+        if (selectedExportTracks.contains(trackIndex)) {
+            selectedExportTracks.remove(trackIndex)
+        } else {
+            selectedExportTracks.add(trackIndex)
+        }
+    }
+    
+    fun selectAllExportTracks() {
+        selectedExportTracks.clear()
+        loopTracks.forEachIndexed { index, track ->
+            if (track.hasContent) {
+                selectedExportTracks.add(index)
+            }
+        }
+    }
+    
+    fun clearExportSelection() {
+        selectedExportTracks.clear()
+    }
+    
+    fun updateIncludeExportDrums(include: Boolean) {
+        includeExportDrums = include
+    }
+    
+    fun startExport(quality: ExportQuality) {
+        // Build track mask from selection
+        var trackMask = 0
+        selectedExportTracks.forEach { index ->
+            trackMask = trackMask or (1 shl index)
+        }
+        
+        if (trackMask == 0) return // No tracks selected
+        
+        // Generate filename
+        val timestamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+            .format(java.util.Date())
+        val extension = if (quality == ExportQuality.HIGH_QUALITY) "wav" else "m4a"
+        val filename = "SynthIO_Export_$timestamp.$extension"
+        
+        // Create job
+        val job = ExportJob(
+            trackMask = trackMask,
+            includeDrums = includeExportDrums,
+            quality = quality,
+            status = ExportStatus.PENDING,
+            filename = filename
+        )
+        
+        exportJobs.add(0, job)  // Add to front of list
+        closeExportModal()
+        
+        // Launch background export
+        performExport(job)
+    }
+    
+    private fun performExport(job: ExportJob) {
+        viewModelScope.launch(Dispatchers.Default) {
+            val jobIndex = exportJobs.indexOfFirst { it.id == job.id }
+            if (jobIndex < 0) return@launch
+            
+            // Update status to MIXING
+            exportJobs[jobIndex] = exportJobs[jobIndex].copy(status = ExportStatus.MIXING)
+            
+            val exportService = audioExportService
+            if (exportService == null) {
+                exportJobs[jobIndex] = exportJobs[jobIndex].copy(status = ExportStatus.FAILED)
+                return@launch
+            }
+            
+            try {
+                val result = exportService.exportAudio(
+                    trackMask = job.trackMask,
+                    includeDrums = job.includeDrums,
+                    quality = if (job.quality == ExportQuality.HIGH_QUALITY) "high_quality" else "compressed"
+                ) { progress ->
+                    // Update progress
+                    val idx = exportJobs.indexOfFirst { it.id == job.id }
+                    if (idx >= 0) {
+                        val status = when {
+                            progress < 0.3f -> ExportStatus.MIXING
+                            progress < 0.8f -> ExportStatus.ENCODING
+                            else -> ExportStatus.ENCODING
+                        }
+                        exportJobs[idx] = exportJobs[idx].copy(
+                            status = status,
+                            progress = progress
+                        )
+                    }
+                }
+                
+                val idx = exportJobs.indexOfFirst { it.id == job.id }
+                if (idx >= 0) {
+                    if (result != null) {
+                        exportJobs[idx] = exportJobs[idx].copy(
+                            status = ExportStatus.COMPLETE,
+                            progress = 1f,
+                            outputUri = Uri.parse(result.uri)
+                        )
+                    } else {
+                        exportJobs[idx] = exportJobs[idx].copy(status = ExportStatus.FAILED)
+                    }
+                }
+            } catch (e: Exception) {
+                val idx = exportJobs.indexOfFirst { it.id == job.id }
+                if (idx >= 0) {
+                    exportJobs[idx] = exportJobs[idx].copy(status = ExportStatus.FAILED)
+                }
+            }
+        }
+    }
+    
+    fun cancelExport(jobId: String) {
+        val jobIndex = exportJobs.indexOfFirst { it.id == jobId }
+        if (jobIndex >= 0) {
+            val job = exportJobs[jobIndex]
+            if (job.status == ExportStatus.PENDING || job.status == ExportStatus.MIXING || job.status == ExportStatus.ENCODING) {
+                exportJobs.removeAt(jobIndex)
+            }
+        }
+    }
+    
+    fun removeExportJob(jobId: String) {
+        val jobIndex = exportJobs.indexOfFirst { it.id == jobId }
+        if (jobIndex >= 0) {
+            exportJobs.removeAt(jobIndex)
+        }
+    }
+    
+    fun clearCompletedExports() {
+        exportJobs.removeAll { it.status == ExportStatus.COMPLETE || it.status == ExportStatus.FAILED }
+    }
+    
+    fun hasActiveExports(): Boolean {
+        return exportJobs.any { 
+            it.status == ExportStatus.PENDING || 
+            it.status == ExportStatus.MIXING || 
+            it.status == ExportStatus.ENCODING 
+        }
+    }
+    
+    fun openExportsPage() {
+        showExportsPage = true
+    }
+    
+    fun closeExportsPage() {
+        showExportsPage = false
     }
     
     override fun onCleared() {

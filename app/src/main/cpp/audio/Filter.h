@@ -58,6 +58,9 @@ private:
     float mKeyTracking = 0.0f;
     float mNoteFrequency = 440.0f;
     
+    // DC blocker state for bass boost mode
+    float mDCBlockState = 0.0f;
+    
     void calculateLPFCoefficients();
     void calculateHPFCoefficient();
     

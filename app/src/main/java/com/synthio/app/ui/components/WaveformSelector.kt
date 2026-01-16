@@ -27,8 +27,8 @@ import kotlin.math.sin
 
 @Composable
 fun WaveformSelector(
-    selectedWaveform: Waveform,
-    onWaveformSelected: (Waveform) -> Unit,
+    selectedWaveforms: List<Waveform>,
+    onWaveformToggled: (Waveform) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -49,8 +49,8 @@ fun WaveformSelector(
         Waveform.entries.forEach { waveform ->
             WaveformButton(
                 waveform = waveform,
-                isSelected = waveform == selectedWaveform,
-                onClick = { onWaveformSelected(waveform) }
+                isSelected = selectedWaveforms.contains(waveform),
+                onClick = { onWaveformToggled(waveform) }
             )
         }
     }

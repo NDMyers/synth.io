@@ -48,6 +48,7 @@ void Filter::setNoteFrequency(float freq) {
 void Filter::reset() {
     mX1 = mX2 = mY1 = mY2 = 0.0f;
     mHPFState = 0.0f;
+    mDCBlockState = 0.0f;
 }
 
 float Filter::process(float input) {
@@ -72,7 +73,7 @@ float Filter::process(float input) {
     // Low-pass filter (Biquad Direct Form I)
     float lpfOutput = mA0 * input + mA1 * mX1 + mA2 * mX2 - mB1 * mY1 - mB2 * mY2;
     
-    // Soft saturation to prevent filter runaway at high resonance
+    // CRITICAL: Saturate output to prevent filter runaway at high resonance
     // Using tanh-based saturation that's transparent at normal levels
     lpfOutput = softSaturate(lpfOutput);
     
@@ -80,7 +81,15 @@ float Filter::process(float input) {
     mX2 = mX1;
     mX1 = input;
     mY2 = mY1;
-    mY1 = lpfOutput;
+    mY1 = softSaturate(lpfOutput);  // Saturate state to prevent feedback runaway
+    
+    // Prevent denormalized values and infinities in state variables
+    // Denormals cause performance issues and accumulate to corrupt state
+    const float antiDenormal = 1e-20f;
+    if (std::abs(mY1) < antiDenormal) mY1 = 0.0f;
+    if (std::abs(mY2) < antiDenormal) mY2 = 0.0f;
+    if (!std::isfinite(mY1)) mY1 = 0.0f;
+    if (!std::isfinite(mY2)) mY2 = 0.0f;
     
     // Apply resonance gain compensation
     // High resonance boosts signal, so we reduce output proportionally
@@ -91,8 +100,9 @@ float Filter::process(float input) {
     float output;
     if (mHPFCutoff < 1.0f) {
         // Bass boost mode when HPF is at 0
-        // Subtle low-frequency enhancement
-        output = lpfOutput * mBassBoostAmount;
+        // Apply minimal DC blocking to prevent accumulation even in bass boost
+        mDCBlockState = mDCBlockState * 0.999f + lpfOutput * 0.001f;
+        output = (lpfOutput - mDCBlockState) * mBassBoostAmount;
     } else {
         // Apply HPF
         float hpfInput = lpfOutput;
@@ -128,9 +138,9 @@ void Filter::calculateLPFCoefficients() {
         // Normal range: Q from 0.707 to ~15
         Q = 0.707f + mResonance * 15.0f;
     } else {
-        // Self-oscillation range: Q from 15 to 50+
+        // Self-oscillation range: Q from 15 to 30 (safer)
         float t = (mResonance - 0.95f) / 0.05f;  // 0 to 1 in last 5%
-        Q = 15.0f + t * 35.0f;  // Ramps up to Q=50
+        Q = 15.0f + t * 15.0f;  // Ramps up to Q=30 (safer self-oscillation)
     }
     
     // Clamp cutoff to valid range

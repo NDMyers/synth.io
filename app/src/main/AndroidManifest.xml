@@ -16,7 +16,8 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:screenOrientation="portrait"
+            android:screenOrientation="fullUser"
+            android:configChanges="orientation|screenSize|screenLayout"
             android:theme="@style/Theme.SynthIO">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
