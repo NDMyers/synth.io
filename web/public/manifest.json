@@ -1,0 +1,21 @@
+{
+    "name": "Synth.io",
+    "short_name": "Synth",
+    "description": "A polyphonic web synthesizer with looper and MIDI support",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#FFF8F0",
+    "theme_color": "#FFD6E0",
+    "icons": [
+        {
+            "src": "/icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "/icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ]
+}
