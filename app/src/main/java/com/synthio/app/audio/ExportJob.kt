@@ -44,8 +44,8 @@ data class ExportJob(
     val status: ExportStatus = ExportStatus.PENDING,
     /** Progress from 0.0 to 1.0 */
     val progress: Float = 0f,
-    /** URI of the exported file (when complete) */
-    val outputUri: Uri? = null,
+    /** Absolute path to the exported file (when complete) */
+    val outputFilePath: String? = null,
     /** Filename for display */
     val filename: String = "",
     /** Error message if failed */

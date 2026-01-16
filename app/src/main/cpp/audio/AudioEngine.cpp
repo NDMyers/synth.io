@@ -715,6 +715,21 @@ AudioEngine::onAudioReady(oboe::AudioStream *audioStream, void *audioData,
       mSynthTremolo.process(synthL, synthR);
       mSynthDelay.process(synthL, synthR);
       mSynthReverb.process(synthL, synthR);
+
+      // Bass boost: Simple low-shelf filter to enhance sub-200Hz frequencies
+      // Using a one-pole lowpass to extract bass, then adding it back
+      static float bassFilterL = 0.0f;
+      static float bassFilterR = 0.0f;
+      constexpr float BASS_CUTOFF = 0.02f;      // ~200Hz at 48kHz (lower = lower cutoff)
+      constexpr float BASS_BOOST_AMOUNT = 0.4f; // ~3dB boost to low end
+
+      // One-pole lowpass to extract bass
+      bassFilterL += BASS_CUTOFF * (synthL - bassFilterL);
+      bassFilterR += BASS_CUTOFF * (synthR - bassFilterR);
+
+      // Add extracted bass back for boost
+      synthL += bassFilterL * BASS_BOOST_AMOUNT;
+      synthR += bassFilterR * BASS_BOOST_AMOUNT;
     }
 
     // Apply Master Volume to both Synth and Wurlitzer
@@ -758,7 +773,8 @@ AudioEngine::onAudioReady(oboe::AudioStream *audioStream, void *audioData,
 
       // Get the drum synth output
       // Note: Volume is applied later in mixing stage
-      metronomeSample = mDrumMachine.getDrumSynthSample();
+      constexpr float METRONOME_VOLUME = 1.8f; // Loud metronome
+      metronomeSample = mDrumMachine.getDrumSynthSample() * METRONOME_VOLUME;
 
       // Advance timing
       metroSampleCounter += 1.0f;
@@ -790,12 +806,14 @@ AudioEngine::onAudioReady(oboe::AudioStream *audioStream, void *audioData,
     // Best practice: Set gains so sum of ALL sources at MAX stays under 1.0
     // This gives linear volume response with no compression artifacts
     //
-    // Balanced for equal perceived loudness at similar knob positions
-    // Synth raw signal is much hotter than drums, so reduce it significantly
+    // 2x overall volume boost for louder output
+    // Drum ratio changed from 15x to 12x (synth more audible)
+    // Metronome matches drum ratio for consistent volume
     //
-    constexpr float SYNTH_GAIN = 0.15f;  // Bumped up for better output levels
-    constexpr float DRUM_GAIN = 0.675f;  // Drums 15x relative to synth
-    constexpr float METRO_GAIN = 0.055f; // Metronome
+    constexpr float SYNTH_GAIN = 0.09f; // 2x boost (was 0.045)
+    constexpr float DRUM_GAIN = 1.08f;  // 12x relative to synth (was 15x/0.675)
+    constexpr float METRO_GAIN =
+        1.08f; // Same as drums for consistent metronome volume
 
     // Apply gain to each source - completely independent, no interaction
     float synthMixL = (synthL + loopL) * SYNTH_GAIN;

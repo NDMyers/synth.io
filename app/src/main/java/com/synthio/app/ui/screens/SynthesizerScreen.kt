@@ -42,6 +42,8 @@ import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import com.synthio.app.ui.components.*
 import com.synthio.app.audio.ExportQuality
 import kotlinx.coroutines.delay
@@ -230,105 +232,7 @@ fun SynthesizerScreen(
             previousLooperState = viewModel.looperState
         }
         
-        // Loop override confirmation dialog
-        if (viewModel.showLoopOverrideDialog) {
-            LoopOverrideDialog(
-                onConfirm = { viewModel.confirmLoopOverride() },
-                onDismiss = { viewModel.dismissLoopOverrideDialog() },
-                isDarkMode = isDark
-            )
-        }
-        
-        // Multi-track looper modal
-        if (viewModel.showLooperModal) {
-            LooperModal(
-                tracks = viewModel.loopTracks,
-                looperState = viewModel.looperState,
-                activeRecordingTrack = viewModel.activeRecordingTrack,
-                currentBeat = viewModel.looperCurrentBeat,
-                currentBar = viewModel.looperCurrentBar,
-                onStartRecordingTrack = { trackIndex -> viewModel.startRecordingTrack(trackIndex) },
-                onTrackVolumeChange = { index, volume -> viewModel.updateTrackVolume(index, volume) },
-                onToggleMute = { index -> viewModel.toggleTrackMute(index) },
-                onToggleSolo = { index -> viewModel.toggleTrackSolo(index) },
-                onDeleteTrack = { index -> viewModel.showDeleteTrackConfirmation(index) },
-                onDeleteAll = { viewModel.showDeleteAllConfirmation() },
-                onPlayStop = { viewModel.playStopLoop() },
-                onDismiss = { viewModel.dismissLooperModal() },
-                isDarkMode = isDark,
-                metronomeVolume = viewModel.metronomeVolume,
-                onMetronomeVolumeChange = { viewModel.updateMetronomeVolume(it) },
-                barCount = viewModel.looperBarCount,
-                onBarCountChange = { viewModel.updateLooperBarCount(it) },
-                onOpenExport = { viewModel.openExportModal() }
-            )
-        }
-        
-        // Export modal
-        if (viewModel.showExportModal) {
-            ExportModal(
-                tracks = viewModel.loopTracks,
-                selectedTracks = viewModel.selectedExportTracks,
-                includesDrums = viewModel.includeExportDrums,
-                onToggleTrack = { viewModel.toggleExportTrack(it) },
-                onSelectAll = { viewModel.selectAllExportTracks() },
-                onSetIncludeDrums = { viewModel.updateIncludeExportDrums(it) },
-                onStartExport = { quality -> 
-                    viewModel.startExport(quality)
-                    scope.launch {
-                        snackbarHostState.showSnackbar(
-                            message = "Export started! Check progress in Exports (Menu → Exports)",
-                            duration = SnackbarDuration.Short
-                        )
-                    }
-                },
-                onDismiss = { viewModel.closeExportModal() },
-                isDarkMode = isDark
-            )
-        }
-        
-        // Delete single track confirmation
-        viewModel.deleteTrackConfirmIndex?.let { trackIndex ->
-            DeleteTrackDialog(
-                trackIndex = trackIndex,
-                onConfirm = { viewModel.confirmDeleteTrack() },
-                onDismiss = { viewModel.dismissDeleteTrackConfirmation() },
-                isDarkMode = isDark
-            )
-        }
-        
-        // Delete all tracks confirmation
-        if (viewModel.showDeleteAllDialog) {
-            DeleteAllTracksDialog(
-                onConfirm = { viewModel.confirmDeleteAllTracks() },
-                onDismiss = { viewModel.dismissDeleteAllConfirmation() },
-                isDarkMode = isDark
-            )
-        }
-        
-        // Bar count change confirmation dialog
-        if (viewModel.showBarCountChangeDialog) {
-            AlertDialog(
-                onDismissRequest = { viewModel.dismissBarCountChangeDialog() },
-                title = { Text("Change Bar Count?") },
-                text = { 
-                    Text("Changing the bar count to ${viewModel.pendingBarCount} will clear all recorded loops. Continue?") 
-                },
-                confirmButton = {
-                    TextButton(onClick = { viewModel.confirmBarCountChange() }) {
-                        Text("Clear & Change", color = if (isDark) DarkPastelPink else PastelPink)
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { viewModel.dismissBarCountChangeDialog() }) {
-                        Text("Cancel")
-                    }
-                },
-                containerColor = if (isDark) DarkSurfaceCard else SurfaceWhite,
-                titleContentColor = if (isDark) DarkTextPrimary else TextPrimary,
-                textContentColor = if (isDark) DarkTextSecondary else TextSecondary
-            )
-        }
+        // Modals moved to end of file for Z-ordering
         
         // Exports page overlay
         if (viewModel.showExportsPage) {
@@ -338,22 +242,36 @@ fun SynthesizerScreen(
                     .systemBarsPadding()
             ) {
                 val context = LocalContext.current
+                
+                // SAF Launcher for saving files
+                var pendingExportJob by remember { mutableStateOf<com.synthio.app.audio.ExportJob?>(null) }
+                
+                val saveLauncher = rememberLauncherForActivityResult(
+                    contract = androidx.activity.result.contract.ActivityResultContracts.CreateDocument(
+                        if (pendingExportJob?.filename?.endsWith(".wav") == true) "audio/wav" else "audio/aac"
+                    )
+                ) { uri ->
+                    uri?.let { targetUri ->
+                        pendingExportJob?.let { job ->
+                            viewModel.saveExportToUri(job, targetUri) {
+                                scope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        message = "Saved to ${targetUri.lastPathSegment}",
+                                        duration = SnackbarDuration.Short
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 ExportsPage(
                     exportJobs = viewModel.exportJobs,
                     onCancelJob = { viewModel.cancelExport(it) },
                     onRemoveJob = { viewModel.removeExportJob(it) },
-                    onShareJob = { job ->
-                        job.outputUri?.let { uri ->
-                            val shareIntent = android.content.Intent().apply {
-                                action = android.content.Intent.ACTION_SEND
-                                putExtra(android.content.Intent.EXTRA_STREAM, uri)
-                                type = if (job.filename.endsWith(".wav")) "audio/wav" else "audio/aac"
-                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            }
-                            context.startActivity(
-                                android.content.Intent.createChooser(shareIntent, "Share Audio")
-                            )
-                        }
+                    onDownloadJob = { job ->
+                        pendingExportJob = job
+                        saveLauncher.launch(job.filename)
                     },
                     onClearCompleted = { viewModel.clearCompletedExports() },
                     onClose = { viewModel.closeExportsPage() },
@@ -1274,7 +1192,107 @@ fun SynthesizerScreen(
     }
     }
     
-    // Snackbar for notifications - Z-ordered on top of everything
+        // Loop override confirmation dialog
+        if (viewModel.showLoopOverrideDialog) {
+            LoopOverrideDialog(
+                onConfirm = { viewModel.confirmLoopOverride() },
+                onDismiss = { viewModel.dismissLoopOverrideDialog() },
+                isDarkMode = isDark
+            )
+        }
+        
+        // Multi-track looper modal
+        if (viewModel.showLooperModal) {
+            LooperModal(
+                tracks = viewModel.loopTracks,
+                looperState = viewModel.looperState,
+                activeRecordingTrack = viewModel.activeRecordingTrack,
+                currentBeat = viewModel.looperCurrentBeat,
+                currentBar = viewModel.looperCurrentBar,
+                onStartRecordingTrack = { trackIndex -> viewModel.startRecordingTrack(trackIndex) },
+                onTrackVolumeChange = { index, volume -> viewModel.updateTrackVolume(index, volume) },
+                onToggleMute = { index -> viewModel.toggleTrackMute(index) },
+                onToggleSolo = { index -> viewModel.toggleTrackSolo(index) },
+                onDeleteTrack = { index -> viewModel.showDeleteTrackConfirmation(index) },
+                onDeleteAll = { viewModel.showDeleteAllConfirmation() },
+                onPlayStop = { viewModel.playStopLoop() },
+                onDismiss = { viewModel.dismissLooperModal() },
+                isDarkMode = isDark,
+                metronomeVolume = viewModel.metronomeVolume,
+                onMetronomeVolumeChange = { viewModel.updateMetronomeVolume(it) },
+                barCount = viewModel.looperBarCount,
+                onBarCountChange = { viewModel.updateLooperBarCount(it) },
+                onOpenExport = { viewModel.openExportModal() }
+            )
+        }
+        
+        // Export modal
+        if (viewModel.showExportModal) {
+            ExportModal(
+                tracks = viewModel.loopTracks,
+                selectedTracks = viewModel.selectedExportTracks,
+                includesDrums = viewModel.includeExportDrums,
+                onToggleTrack = { viewModel.toggleExportTrack(it) },
+                onSelectAll = { viewModel.selectAllExportTracks() },
+                onSetIncludeDrums = { viewModel.updateIncludeExportDrums(it) },
+                onStartExport = { quality -> 
+                    viewModel.startExport(quality)
+                    scope.launch {
+                        snackbarHostState.showSnackbar(
+                            message = "Export started! Check progress in Exports (Menu → Exports)",
+                            duration = SnackbarDuration.Short
+                        )
+                    }
+                },
+                onDismiss = { viewModel.closeExportModal() },
+                isDarkMode = isDark
+            )
+        }
+        
+        // Delete single track confirmation
+        viewModel.deleteTrackConfirmIndex?.let { trackIndex ->
+            DeleteTrackDialog(
+                trackIndex = trackIndex,
+                onConfirm = { viewModel.confirmDeleteTrack() },
+                onDismiss = { viewModel.dismissDeleteTrackConfirmation() },
+                isDarkMode = isDark
+            )
+        }
+        
+        // Delete all tracks confirmation
+        if (viewModel.showDeleteAllDialog) {
+            DeleteAllTracksDialog(
+                onConfirm = { viewModel.confirmDeleteAllTracks() },
+                onDismiss = { viewModel.dismissDeleteAllConfirmation() },
+                isDarkMode = isDark
+            )
+        }
+        
+        // Bar count change confirmation dialog
+        if (viewModel.showBarCountChangeDialog) {
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissBarCountChangeDialog() },
+                title = { Text("Change Bar Count?") },
+                text = { 
+                    Text("Changing the bar count to ${viewModel.pendingBarCount} will clear all recorded loops. Continue?") 
+                },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.confirmBarCountChange() }) {
+                        Text("Clear & Change", color = if (isDark) DarkPastelPink else PastelPink)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.dismissBarCountChangeDialog() }) {
+                        Text("Cancel")
+                    }
+                },
+                containerColor = if (isDark) DarkSurfaceCard else SurfaceWhite,
+                titleContentColor = if (isDark) DarkTextPrimary else TextPrimary,
+                textContentColor = if (isDark) DarkTextSecondary else TextSecondary
+            )
+        }
+        
+        // Snackbar for notifications - Z-ordered on top of everything
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
         SnackbarHost(
             hostState = snackbarHostState,

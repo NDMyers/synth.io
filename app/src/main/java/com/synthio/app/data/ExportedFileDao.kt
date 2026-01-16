@@ -26,9 +26,9 @@ interface ExportedFileDao {
     @Query("DELETE FROM exported_files WHERE id = :id")
     suspend fun deleteById(id: Long)
     
-    /** Delete an export record by URI */
-    @Query("DELETE FROM exported_files WHERE uri = :uri")
-    suspend fun deleteByUri(uri: String)
+    /** Delete an export record by file path */
+    @Query("DELETE FROM exported_files WHERE filePath = :filePath")
+    suspend fun deleteByFilePath(filePath: String)
     
     /** Delete all exports */
     @Query("DELETE FROM exported_files")

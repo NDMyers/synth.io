@@ -12,7 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -41,7 +41,7 @@ fun ExportsPage(
     exportJobs: List<ExportJob>,
     onCancelJob: (String) -> Unit,
     onRemoveJob: (String) -> Unit,
-    onShareJob: (ExportJob) -> Unit,
+    onDownloadJob: (ExportJob) -> Unit,
     onClearCompleted: () -> Unit,
     onClose: () -> Unit,
     isDarkMode: Boolean,
@@ -140,7 +140,7 @@ fun ExportsPage(
                         job = job,
                         onCancel = { onCancelJob(job.id) },
                         onRemove = { onRemoveJob(job.id) },
-                        onShare = { onShareJob(job) },
+                        onDownload = { onDownloadJob(job) },
                         isDarkMode = isDarkMode
                     )
                 }
@@ -154,7 +154,7 @@ private fun ExportJobCard(
     job: ExportJob,
     onCancel: () -> Unit,
     onRemove: () -> Unit,
-    onShare: () -> Unit,
+    onDownload: () -> Unit,
     isDarkMode: Boolean
 ) {
     val cardColor = if (isDarkMode) DarkSurfaceCard else SurfaceWhite
@@ -166,7 +166,7 @@ private fun ExportJobCard(
                    job.status == ExportStatus.MIXING || 
                    job.status == ExportStatus.ENCODING
     
-    val isClickable = job.status == ExportStatus.COMPLETE && job.outputUri != null
+    val isClickable = job.status == ExportStatus.COMPLETE && job.outputFilePath != null
     
     Box(
         modifier = Modifier
@@ -175,7 +175,7 @@ private fun ExportJobCard(
             .background(cardColor)
             .then(
                 if (isClickable) {
-                    Modifier.clickable { onShare() }
+                    Modifier.clickable { onDownload() }
                 } else {
                     Modifier
                 }
@@ -298,7 +298,7 @@ private fun ExportJobCard(
                         ExportStatus.PENDING -> "Waiting..."
                         ExportStatus.MIXING -> "Mixing..."
                         ExportStatus.ENCODING -> "Encoding..."
-                        ExportStatus.COMPLETE -> "Ready to share"
+                        ExportStatus.COMPLETE -> "Tap to Download"
                         ExportStatus.FAILED -> job.errorMessage ?: "Export failed"
                     },
                     style = SynthTypography.smallLabel.copy(
@@ -329,12 +329,12 @@ private fun ExportJobCard(
             } else if (job.status == ExportStatus.COMPLETE) {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     IconButton(
-                        onClick = onShare,
+                        onClick = onDownload,
                         modifier = Modifier.size(36.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Share,
-                            contentDescription = "Share",
+                            imageVector = Icons.Default.Download,
+                            contentDescription = "Download",
                             tint = accentColor,
                             modifier = Modifier.size(20.dp)
                         )

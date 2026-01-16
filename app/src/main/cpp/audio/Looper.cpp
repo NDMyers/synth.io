@@ -302,32 +302,9 @@ void Looper::process(float synthL, float synthR, float &loopOutL,
 
   switch (mState) {
   case State::PRE_COUNT: {
-    // During pre-count, play existing tracks but don't record yet
-    if (hasAnyLoop()) {
-      bool hasSolo = anySolo();
-
-      for (int i = 0; i < MAX_TRACKS; i++) {
-        if (!mTracks[i].hasContent)
-          continue;
-        if (mTracks[i].muted)
-          continue;
-        if (hasSolo && !mTracks[i].solo)
-          continue;
-
-        // Use mPlaybackPosition for playback during pre-count
-        if (mPlaybackPosition <
-            static_cast<int64_t>(mTracks[i].bufferL.size())) {
-          loopOutL += mTracks[i].bufferL[mPlaybackPosition] * mTracks[i].volume;
-          loopOutR += mTracks[i].bufferR[mPlaybackPosition] * mTracks[i].volume;
-        }
-      }
-
-      // Advance playback position for existing tracks
-      mPlaybackPosition++;
-      if (mLoopLengthSamples > 0 && mPlaybackPosition >= mLoopLengthSamples) {
-        mPlaybackPosition = 0;
-      }
-    }
+    // During pre-count, DON'T play existing tracks - only metronome plays
+    // (handled by AudioEngine). Just update timing for pre-count.
+    // No audio output during pre-count from looper.
 
     // Track pre-count progress
     mPreCountPosition++;

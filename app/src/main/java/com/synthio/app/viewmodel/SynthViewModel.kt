@@ -25,6 +25,7 @@ import com.synthio.app.audio.ExportQuality
 import com.synthio.app.audio.ExportStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -1302,7 +1303,7 @@ class SynthViewModel : ViewModel() {
                         exportJobs[idx] = exportJobs[idx].copy(
                             status = ExportStatus.COMPLETE,
                             progress = 1f,
-                            outputUri = Uri.parse(result.uri)
+                            outputFilePath = result.filePath
                         )
                     } else {
                         exportJobs[idx] = exportJobs[idx].copy(status = ExportStatus.FAILED)
@@ -1312,6 +1313,23 @@ class SynthViewModel : ViewModel() {
                 val idx = exportJobs.indexOfFirst { it.id == job.id }
                 if (idx >= 0) {
                     exportJobs[idx] = exportJobs[idx].copy(status = ExportStatus.FAILED)
+                }
+            }
+        }
+    }
+    
+    fun saveExportToUri(job: ExportJob, targetUri: Uri, onSuccess: () -> Unit) {
+        viewModelScope.launch {
+            val exportService = audioExportService ?: return@launch
+            
+            // Find the full export record by matching filename
+            val allExports = exportService.getAllExports().first()
+            val export = allExports.find { it.filename == job.filename }
+            
+            if (export != null) {
+                val success = exportService.copyToUri(export, targetUri)
+                if (success) {
+                    onSuccess()
                 }
             }
         }

@@ -15,8 +15,8 @@ data class ExportedFile(
     /** Display name of the exported file (e.g., "Synth Loop 2026-01-15") */
     val filename: String,
     
-    /** Content URI to the file in MediaStore */
-    val uri: String,
+    /** Absolute path to the file in internal storage */
+    val filePath: String,
     
     /** Bitmask of which tracks were included (0-15 for tracks 0-3) */
     val trackMask: Int,

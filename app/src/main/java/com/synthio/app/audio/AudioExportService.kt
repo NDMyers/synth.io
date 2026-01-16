@@ -24,18 +24,17 @@ class AudioExportService(private val context: Context) {
     
     companion object {
         private const val TAG = "AudioExportService"
-        private const val SAMPLE_RATE = 48000
-        private const val CHANNELS = 2
+        private const val EXPORTS_DIR = "exports"
     }
     
     private val database by lazy { ExportDatabase.getDatabase(context) }
     private val dao by lazy { database.exportedFileDao() }
     
     /**
-     * Export audio with the given configuration.
+     * Export audio to internal app storage.
      * 
      * @param trackMask Bitmask of tracks to include
-     * @param includeDrums Whether to include drums (future feature)
+     * @param includeDrums Whether to include drums
      * @param quality "compressed" for AAC, "high_quality" for WAV
      * @param onProgress Callback for progress updates (0.0 to 1.0)
      * @return The ExportedFile record if successful, null if failed
@@ -56,34 +55,41 @@ class AudioExportService(private val context: Context) {
                 return@withContext null
             }
             
-            onProgress(0.2f)
+            onProgress(0.3f)
+            
+            // Create exports directory if needed
+            val exportsDir = File(context.filesDir, EXPORTS_DIR)
+            if (!exportsDir.exists()) {
+                exportsDir.mkdirs()
+            }
             
             // Generate filename
             val timestamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date())
             val extension = if (quality == "compressed") "aac" else "wav"
             val filename = "SynthIO_Loop_$timestamp.$extension"
+            val file = File(exportsDir, filename)
             
-            onProgress(0.3f)
+            onProgress(0.4f)
             
-            // Export to MediaStore
-            val uri = saveToMediaStore(buffer, filename, quality == "compressed", onProgress)
-            if (uri == null) {
-                Log.e(TAG, "Failed to save to MediaStore")
-                return@withContext null
+            // Encode and save to internal storage
+            FileOutputStream(file).use { outputStream ->
+                if (quality == "compressed") {
+                    AacEncoder.encode(buffer, outputStream)
+                } else {
+                    WavEncoder.encode(buffer, outputStream)
+                }
             }
             
             onProgress(0.9f)
             
-            // Calculate duration
+            // Calculate metadata
             val durationMs = WavEncoder.calculateDurationMs(buffer.size)
-            
-            // Get file size
-            val fileSize = getFileSize(uri)
+            val fileSize = file.length()
             
             // Create database record
             val exportedFile = ExportedFile(
                 filename = filename,
-                uri = uri.toString(),
+                filePath = file.absolutePath,
                 trackMask = trackMask,
                 includeDrums = includeDrums,
                 quality = quality,
@@ -94,7 +100,7 @@ class AudioExportService(private val context: Context) {
             val id = dao.insert(exportedFile)
             onProgress(1.0f)
             
-            Log.i(TAG, "Export complete: $filename, size: $fileSize bytes, duration: ${durationMs}ms")
+            Log.i(TAG, "Export complete to internal storage: ${file.absolutePath}")
             return@withContext exportedFile.copy(id = id)
             
         } catch (e: Exception) {
@@ -103,132 +109,54 @@ class AudioExportService(private val context: Context) {
         }
     }
     
-    private suspend fun saveToMediaStore(
-        buffer: FloatArray,
-        filename: String,
-        isCompressed: Boolean,
-        onProgress: suspend (Float) -> Unit
-    ): Uri? {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            saveToMediaStoreQ(buffer, filename, isCompressed, onProgress)
-        } else {
-            saveToMediaStoreLegacy(buffer, filename, isCompressed, onProgress)
-        }
-    }
-    
-    private suspend fun saveToMediaStoreQ(
-        buffer: FloatArray,
-        filename: String,
-        isCompressed: Boolean,
-        onProgress: suspend (Float) -> Unit
-    ): Uri? {
-        val mimeType = if (isCompressed) "audio/aac" else "audio/wav"
-        
-        val values = ContentValues().apply {
-            put(MediaStore.Audio.Media.DISPLAY_NAME, filename)
-            put(MediaStore.Audio.Media.MIME_TYPE, mimeType)
-            put(MediaStore.Audio.Media.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/SynthIO")
-            put(MediaStore.Audio.Media.IS_PENDING, 1)
-        }
-        
-        val resolver = context.contentResolver
-        val uri = resolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
-            ?: return null
-        
+    /**
+     * Copy an internal export file to a user-selected URI (SAF).
+     * 
+     * @param exportedFile The export record containing the source file path
+     * @param targetUri The URI selected by the user via CreateDocument
+     * @return true if successful, false otherwise
+     */
+    suspend fun copyToUri(exportedFile: ExportedFile, targetUri: Uri): Boolean = withContext(Dispatchers.IO) {
         try {
-            resolver.openOutputStream(uri)?.use { outputStream ->
-                onProgress(0.4f)
-                
-                if (isCompressed) {
-                    AacEncoder.encode(buffer, outputStream)
-                } else {
-                    WavEncoder.encode(buffer, outputStream)
+            val internalFile = File(exportedFile.filePath)
+            if (!internalFile.exists()) {
+                Log.e(TAG, "Internal file not found: ${exportedFile.filePath}")
+                return@withContext false
+            }
+            
+            context.contentResolver.openOutputStream(targetUri)?.use { output ->
+                internalFile.inputStream().use { input ->
+                    input.copyTo(output)
                 }
-                
-                onProgress(0.8f)
             }
             
-            // Mark as complete
-            values.clear()
-            values.put(MediaStore.Audio.Media.IS_PENDING, 0)
-            resolver.update(uri, values, null, null)
-            
-            return uri
+            Log.i(TAG, "File copied to URI: $targetUri")
+            true
         } catch (e: Exception) {
-            Log.e(TAG, "Error writing to MediaStore", e)
-            resolver.delete(uri, null, null)
-            return null
-        }
-    }
-    
-    @Suppress("DEPRECATION")
-    private suspend fun saveToMediaStoreLegacy(
-        buffer: FloatArray,
-        filename: String,
-        isCompressed: Boolean,
-        onProgress: suspend (Float) -> Unit
-    ): Uri? {
-        val musicDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
-        val synthioDir = File(musicDir, "SynthIO")
-        if (!synthioDir.exists()) {
-            synthioDir.mkdirs()
-        }
-        
-        val file = File(synthioDir, filename)
-        
-        try {
-            FileOutputStream(file).use { outputStream ->
-                onProgress(0.4f)
-                
-                if (isCompressed) {
-                    AacEncoder.encode(buffer, outputStream)
-                } else {
-                    WavEncoder.encode(buffer, outputStream)
-                }
-                
-                onProgress(0.8f)
-            }
-            
-            // Add to MediaStore
-            val values = ContentValues().apply {
-                put(MediaStore.Audio.Media.DATA, file.absolutePath)
-                put(MediaStore.Audio.Media.DISPLAY_NAME, filename)
-                put(MediaStore.Audio.Media.MIME_TYPE, if (isCompressed) "audio/aac" else "audio/wav")
-            }
-            
-            return context.contentResolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error writing to file", e)
-            return null
-        }
-    }
-    
-    private fun getFileSize(uri: Uri): Long {
-        return try {
-            context.contentResolver.openFileDescriptor(uri, "r")?.use {
-                it.statSize
-            } ?: 0L
-        } catch (e: Exception) {
-            0L
+            Log.e(TAG, "Failed to copy to URI", e)
+            false
         }
     }
     
     /**
-     * Delete an exported file from both MediaStore and database.
+     * Delete an exported file from internal storage and database.
      */
     suspend fun deleteExport(exportedFile: ExportedFile): Boolean = withContext(Dispatchers.IO) {
         try {
-            // Delete from MediaStore
-            val uri = Uri.parse(exportedFile.uri)
-            context.contentResolver.delete(uri, null, null)
-            
-            // Delete from database
+            val file = File(exportedFile.filePath)
+            if (file.exists()) {
+                file.delete()
+            }
             dao.deleteById(exportedFile.id)
-            
             true
         } catch (e: Exception) {
             Log.e(TAG, "Error deleting export", e)
             false
         }
     }
+    /**
+     * Get all exports from the database.
+     */
+    fun getAllExports() = dao.getAllExports()
+
 }
